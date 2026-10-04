@@ -33,6 +33,12 @@ export interface AppState {
   fileName: string;
   projectId: string | null;
   selectedFaceIds: Set<number>;
+  /**
+   * 检查视图面组过滤（o / g 名）。null = 全部。
+   * 纯界面状态：不删面、不改 UV、不改接缝、不影响导出与存档；
+   * 载入/替换/撤销模型后自动恢复“全部”。
+   */
+  activeGroup: string | null;
   checkerOn: boolean;
   checkerScale: number;
   showFlipped: boolean;
@@ -47,6 +53,7 @@ type Action =
   | { type: 'replace-mesh'; mesh: MeshData; stats: MeshStats; notice?: Notice }
   | { type: 'select'; faceIds: Set<number> }
   | { type: 'toggle-face'; faceId: number }
+  | { type: 'set-group'; group: string | null }
   | { type: 'set-checker'; on: boolean; scale?: number }
   | { type: 'toggle-flag'; key: 'showFlipped' | 'showOverlap' }
   | { type: 'unwrapping'; on: boolean }
@@ -65,6 +72,7 @@ function reducer(state: AppState, action: Action): AppState {
         fileName: action.fileName,
         projectId: action.projectId,
         selectedFaceIds: new Set(),
+        activeGroup: null,
         unwrapping: false,
         history: [],
         notice: null,
@@ -74,6 +82,8 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         mesh: action.mesh,
         stats: action.stats,
+        // 组过滤是检查视图；换网格后组构成可能改变，回到“全部”。
+        activeGroup: null,
         history: state.mesh ? [...state.history, state.mesh].slice(-10) : state.history,
         notice: action.notice ?? state.notice,
       };
@@ -85,6 +95,10 @@ function reducer(state: AppState, action: Action): AppState {
       else next.add(action.faceId);
       return { ...state, selectedFaceIds: next };
     }
+    case 'set-group':
+      // 切换检查视图：清空面选择，避免“定位/选中”数字混入上一组的面。
+      // 只改界面状态；mesh/stats/objText/导出均不变。
+      return { ...state, activeGroup: action.group, selectedFaceIds: new Set() };
     case 'set-checker':
       return {
         ...state,
@@ -106,6 +120,8 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         mesh: prev,
         stats: analyzeMesh(prev),
+        activeGroup: null,
+        selectedFaceIds: new Set(),
         history: state.history.slice(0, -1),
         notice: { kind: 'info', text: '已撤销上一次 UV 替换' },
       };
@@ -120,6 +136,7 @@ export interface AppContextValue {
   loadObjText: (text: string, fileName: string, projectId?: string | null) => void;
   selectFaces: (faceIds: Set<number>) => void;
   toggleFace: (faceId: number) => void;
+  setActiveGroup: (group: string | null) => void;
   setChecker: (on: boolean, scale?: number) => void;
   toggleFlag: (key: 'showFlipped' | 'showOverlap') => void;
   runUnwrap: () => Promise<void>;
@@ -143,6 +160,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fileName: '',
     projectId: null,
     selectedFaceIds: new Set<number>(),
+    activeGroup: null as string | null,
     checkerOn: true,
     checkerScale: 8,
     showFlipped: true,
@@ -207,6 +225,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
   const toggleFace = useCallback((faceId: number) => {
     dispatch({ type: 'toggle-face', faceId });
+  }, []);
+  const setActiveGroup = useCallback((group: string | null) => {
+    dispatch({ type: 'set-group', group });
   }, []);
   const setChecker = useCallback((on: boolean, scale?: number) => {
     dispatch({ type: 'set-checker', on, scale });
@@ -337,6 +358,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       loadObjText,
       selectFaces,
       toggleFace,
+      setActiveGroup,
       setChecker,
       toggleFlag,
       runUnwrap,
@@ -349,9 +371,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       notify,
       undo,
     }),
-    [state, projects, loadObjText, selectFaces, toggleFace, setChecker,
-      toggleFlag, runUnwrap, exportCurrent, saveCurrent, refreshProjects,
-      openProject, removeProject, notify, undo],
+    [state, projects, loadObjText, selectFaces, toggleFace, setActiveGroup,
+      setChecker, toggleFlag, runUnwrap, exportCurrent, saveCurrent,
+      refreshProjects, openProject, removeProject, notify, undo],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

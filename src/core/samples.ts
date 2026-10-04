@@ -131,9 +131,55 @@ f 7/7 8/8 9/9
 f 10/1 11/2 12/3
 `;
 
+/**
+ * 5) 分组异常对照
+ *    两个 o/g 组，且有一个 UV 岛【跨组】：
+ *    - Part_A：左方块（2 三角）+ 右侧翻转三角（共 3 面 3 三角）；
+ *    - Part_B：与左方块 3D 共享一条焊接边且 UV 一致 => 同一个跨组 UV 岛
+ *      （四边面扇形成 2 三角），另有一片 UV 完全塌缩成线（UV 退化，
+ *      3D 不退化，1 三角）=> 2 面 3 三角。
+ *    整模型 5 面 6 三角、3 个 UV 岛（其中 1 个跨组）。
+ *    用于验收“逐组检查”：A 组只报翻转，B 组只报 UV 退化；恢复全部后
+ *    汇总与原诊断一致；跨组岛拓扑仍按整网格计算。
+ */
+const grouped = `${header('分组异常对照样例', 'Part_A 翻转 / Part_B UV 退化，中间一个 UV 岛跨两组')}
+v 0 0 0
+v 1 0 0
+v 1 1 0
+v 0 1 0
+v 0 -1 0
+v 1 -1 0
+v 1 -0.6 0
+v 2 0 0
+v 2 1 0
+v 3 0 0
+v 4 0 0
+v 4 1 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+vt 2 0
+vt 2 1
+vt 3 1
+vt 2 0
+vt 2 1
+vt 3.6 0
+vt 3.7 0
+vt 3.75 0
+g Part_A
+f 1/1 2/2 3/3
+f 1/1 3/3 4/4
+f 5/5 6/6 7/7
+g Part_B
+f 2/2 8/8 9/9 3/3
+f 10/10 11/11 12/12
+`;
+
 export const SAMPLES: SampleDef[] = [
   { id: 'mirrored', label: '镜像岛', description: '折边两侧映射到同一 UV 区域，绕序相反', obj: mirrored },
   { id: 'seams', label: '共享边接缝', description: '立方体：每面顶点独立、UV 各占一格，共享边全为接缝', obj: cubeWithSeams() },
   { id: 'nonmanifold', label: '非流形边', description: '三个三角形共享一条 3D 边', obj: nonManifold },
   { id: 'degenerate', label: '退化/拉伸/重叠', description: '退化面不计比率，另有强拉伸与岛间重叠', obj: degenerate },
+  { id: 'grouped', label: '分组异常对照', description: '两组各带不同异常，另含一个跨组 UV 岛', obj: grouped },
 ];

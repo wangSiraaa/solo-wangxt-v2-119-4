@@ -16,7 +16,7 @@ const check = (name: string, cond: boolean, extra = '') => {
 
 await page.goto(base);
 await page.waitForSelector('.sample-grid', { timeout: 10000 });
-check('空状态显示样例', await page.locator('.sample-grid button').count() === 4);
+check('空状态显示样例', await page.locator('.sample-grid button').count() === 5);
 
 // 1) 共享边接缝样例
 await page.locator('.sample-grid button', { hasText: '共享边接缝' }).click();
@@ -134,6 +134,77 @@ await page.locator('.menu-item .proj-open').first().click();
 await sleep(300);
 panel = await page.locator('.panel').innerText();
 check('从 IndexedDB 恢复工程（36 角点）', /角点 \(corner\)\s*36/.test(panel));
+
+// 10) 按面组过滤检查视图（grouped 样例：A 组翻转 / B 组 UV 退化 / 1 个跨组岛）
+await page.locator('.toolbar .dropdown button', { hasText: '样例' }).hover();
+await page.locator('.dropdown .menu button', { hasText: '分组异常对照' }).click();
+await sleep(200);
+panel = await page.locator('.panel').innerText();
+check('分组样例: 整网格翻转 1', /翻转三角形 \/ 镜像岛\s*1 \/ 1/.test(panel), panel.match(/翻转[^\n]*/)?.[0]);
+check('分组样例: 整网格 UV 退化 1', /退化（3D \/ UV）\s*0 \/ 1/.test(panel), panel.match(/退化（[^\n]*/)?.[0]);
+check('分组样例: 3 个 UV 岛', /UV 岛\s*3/.test(panel));
+check('分组选择器存在两组', await page.locator('select[data-testid=group-select] option').count() === 3);
+
+// 切到 Part_A：只看到本组翻转，看不到 B 组的 UV 退化；有跨组岛说明
+await page.locator('select[data-testid=group-select]').selectOption('Part_A');
+await sleep(150);
+panel = await page.locator('.panel').innerText();
+check('A 组: 翻转 1 / 镜像岛 1', /翻转三角形 \/ 镜像岛\s*1 \/ 1/.test(panel), panel.match(/翻转[^\n]*/)?.[0]);
+check('A 组: 不显示 B 组 UV 退化（0 / 0）', /退化（3D \/ UV）\s*0 \/ 0/.test(panel), panel.match(/退化（[^\n]*/)?.[0]);
+check('A 组: 组内面数 3/5 · 三角 3/6', /3 \/ 5\s*·\s*3 \/ 6/.test(panel), panel.match(/[^\n]*组内[^\n]*/)?.[0]);
+check('A 组: 跨组岛提示', /跨多个组/.test(panel) && /岛连通\/镜像按整网格拓扑/.test(panel));
+check('A 组: 淡化说明（不删面/不改UV/不改接缝/完整模型）',
+  /其他组在二维与三维视图中淡化/.test(panel) && /不删面、不改 UV、不改接缝/.test(panel) && /完整模型/.test(panel));
+check('A 组: 触及岛 2 / 3', /触及 UV 岛（整网格拓扑）\s*2 \/ 3/.test(panel), panel.match(/触及[^\n]*/)?.[0]);
+check('A 组: 视图标签显示其他组淡化', (await page.locator('.view3d .view-label').innerText()).includes('其他组淡化'));
+
+// 切到 Part_B：翻转消失，只剩 UV 退化
+await page.locator('select[data-testid=group-select]').selectOption('Part_B');
+await sleep(150);
+panel = await page.locator('.panel').innerText();
+check('B 组: 无翻转（0 / 0）', /翻转三角形 \/ 镜像岛\s*0 \/ 0/.test(panel), panel.match(/翻转[^\n]*/)?.[0]);
+check('B 组: UV 退化 1（0 / 1）', /退化（3D \/ UV）\s*0 \/ 1/.test(panel), panel.match(/退化（[^\n]*/)?.[0]);
+
+// 恢复全部：汇总与原诊断一致
+await page.locator('select[data-testid=group-select]').selectOption('');
+await sleep(150);
+panel = await page.locator('.panel').innerText();
+check('恢复全部: 翻转 1 / 镜像岛 1', /翻转三角形 \/ 镜像岛\s*1 \/ 1/.test(panel));
+check('恢复全部: 退化 0 / 1', /退化（3D \/ UV）\s*0 \/ 1/.test(panel));
+check('恢复全部: 3 岛', /UV 岛\s*3/.test(panel));
+check('恢复全部: 过滤说明消失', !/其他组在二维与三维视图中淡化/.test(panel));
+
+// 过滤状态下导出，再载入：仍是完整模型（6 三角、两个组），且过滤态不持久
+await page.locator('select[data-testid=group-select]').selectOption('Part_A');
+await sleep(100);
+const [download2] = await Promise.all([
+  page.waitForEvent('download'),
+  page.locator('button', { hasText: '导出 UV OBJ' }).click(),
+]);
+const path2 = await download2.path();
+const objText2 = fs.readFileSync(path2!, 'utf8');
+check('过滤态导出: 仍是全部 6 行 f', (objText2.match(/^f /gm) || []).length === 6,
+  `f=${(objText2.match(/^f /gm) || []).length}`);
+check('过滤态导出: 两个 g 行都在', (objText2.match(/^g /gm) || []).length === 2,
+  `g=${(objText2.match(/^g /gm) || []).length}`);
+check('过滤态导出: 含 Part_A 与 Part_B', /g Part_A/.test(objText2) && /g Part_B/.test(objText2));
+
+await page.evaluate((text) => {
+  const dt = new DataTransfer();
+  dt.items.add(new File([text], 'grouped-rt.obj', { type: 'text/plain' }));
+  const input = document.querySelector('input[type=file]') as HTMLInputElement;
+  input.files = dt.files;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}, objText2);
+await sleep(300);
+panel = await page.locator('.panel').innerText();
+check('过滤态导出往返: 载入后是完整模型 6 三角', /原始面 \/ 三角形\s*6 \/ 6/.test(panel), panel.match(/原始面[^\n]*/)?.[0]);
+const groupOptions = await page.locator('select[data-testid=group-select] option').allInnerTexts();
+check('过滤态导出往返: 仍列出两个组',
+  groupOptions.some((o) => o.includes('Part_A')) && groupOptions.some((o) => o.includes('Part_B')),
+  JSON.stringify(groupOptions));
+check('过滤态导出往返: 过滤视图重置为全部（不持久）',
+  await page.locator('select[data-testid=group-select]').inputValue() === '');
 
 check('无控制台错误', errors.length === 0, errors.slice(0, 3).join(' | '));
 

@@ -6,9 +6,11 @@ import {
   buildFlagColors,
   buildNonIndexedPositions,
   buildSelectionOverlay,
+  buildWireOverlay,
   makeCheckerTexture,
 } from '../three/geometry';
 import type { MeshData } from '../core/types';
+import { triActiveMask } from '../core/groupFilter';
 
 export function View3D() {
   const { state, selectFaces, toggleFace } = useApp();
@@ -89,7 +91,7 @@ export function View3D() {
 
     const wire = new THREE.LineSegments(
       new THREE.BufferGeometry(),
-      new THREE.LineBasicMaterial({ color: 0x1b1d24 }),
+      new THREE.LineBasicMaterial({ color: 0xffffff, vertexColors: true }),
     );
     scene.add(wire);
 
@@ -143,11 +145,13 @@ export function View3D() {
     world.meshData = meshData;
     const geo = world.mesh.geometry;
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const activeMask = triActiveMask(meshData, state.activeGroup);
     const colors = buildFlagColors(
       meshData,
       stats,
       state.showFlipped,
       state.showOverlap,
+      activeMask,
     );
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
@@ -169,8 +173,9 @@ export function View3D() {
       }
       geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
       mat.map = tex;
+      // 组过滤时用顶点色（组外=暗色）压暗棋盘；全部时为纯白=原图纹。
+      mat.vertexColors = state.activeGroup !== null;
       mat.color.set(0xffffff);
-      mat.vertexColors = false;
       mat.needsUpdate = true;
     } else {
       mat.vertexColors = true;
@@ -180,23 +185,9 @@ export function View3D() {
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
 
-    // 深色三角形线框（非索引，相邻面有重复线段，低模无妨）
-    const linePos: number[] = [];
-    for (const t of meshData.triangles) {
-      const cs = t.corners.map((ci) => {
-        const c = meshData.corners[ci];
-        return [
-          meshData.positions[c.v * 3],
-          meshData.positions[c.v * 3 + 1],
-          meshData.positions[c.v * 3 + 2],
-        ];
-      });
-      linePos.push(...cs[0], ...cs[1], ...cs[1], ...cs[2], ...cs[2], ...cs[0]);
-    }
-    world.wire.geometry.setAttribute(
-      'position',
-      new THREE.Float32BufferAttribute(linePos, 3),
-    );
+    // 深色三角形线框（非索引，相邻面有重复线段，低模无妨）；组外线淡化
+    world.wire.geometry.dispose();
+    world.wire.geometry = buildWireOverlay(meshData, activeMask);
 
     // 取景：首次或换模型时居中
     const box = geo.boundingBox!;
@@ -208,7 +199,8 @@ export function View3D() {
     world.camera.updateProjectionMatrix();
     world.controls.target.copy(center);
     world.controls.update();
-  }, [meshData, stats, state.checkerOn, state.checkerScale, state.showFlipped, state.showOverlap]);
+  }, [meshData, stats, state.checkerOn, state.checkerScale, state.showFlipped,
+    state.showOverlap, state.activeGroup]);
 
   // 选择集 -> 覆盖网格
   useEffect(() => {
@@ -264,8 +256,9 @@ export function View3D() {
 
   const label = useMemo(() => {
     if (!meshData) return '未载入模型';
-    return `${meshData.fileName} · ${meshData.faces.length} 面 / ${meshData.triangles.length} 三角 / ${meshData.vertexCount} 顶点身份`;
-  }, [meshData]);
+    const base = `${meshData.fileName} · ${meshData.faces.length} 面 / ${meshData.triangles.length} 三角 / ${meshData.vertexCount} 顶点身份`;
+    return state.activeGroup ? `检查组 ${state.activeGroup}（其他组淡化）— ${base}` : base;
+  }, [meshData, state.activeGroup]);
 
   return (
     <div className="view view3d" ref={mountRef}>

@@ -8,6 +8,7 @@ import {
   buildUvSelection,
 } from '../three/geometry';
 import type { MeshData } from '../core/types';
+import { triActiveMask } from '../core/groupFilter';
 
 export function View2D() {
   const { state, selectFaces, toggleFace } = useApp();
@@ -162,9 +163,11 @@ export function View2D() {
     if (!world || !meshData || !stats) return;
     world.meshData = meshData;
 
+    const activeMask = triActiveMask(meshData, state.activeGroup);
     const fg = buildUvFills(meshData, stats, {
       showFlipped: state.showFlipped,
       showOverlap: state.showOverlap,
+      activeMask,
     });
     world.fills.geometry.dispose();
     world.fills.geometry = fg;
@@ -175,12 +178,12 @@ export function View2D() {
       (c as THREE.LineSegments).geometry?.dispose();
     });
     layer.clear();
-    const edges = buildUvEdges(meshData, stats);
-    const addEdges = (geo: THREE.BufferGeometry, color: number, opacity: number, order: number) => {
+    const edges = buildUvEdges(meshData, stats, activeMask);
+    const addEdges = (geo: THREE.BufferGeometry, opacity: number, order: number) => {
       const line = new THREE.LineSegments(
         geo,
         new THREE.LineBasicMaterial({
-          color,
+          vertexColors: true,
           transparent: opacity < 1,
           opacity,
           depthTest: false,
@@ -189,17 +192,17 @@ export function View2D() {
       line.renderOrder = order;
       layer.add(line);
     };
-    addEdges(edges.regular, 0x2e3140, 0.55, 1);
-    addEdges(edges.boundary, 0xdfe3ee, 0.9, 2);
-    addEdges(edges.seam, 0xffb02e, 1.0, 2);
-    addEdges(edges.nonManifold, 0xff3b5c, 1.0, 3);
+    addEdges(edges.regular, 0.55, 1);
+    addEdges(edges.boundary, 0.9, 2);
+    addEdges(edges.seam, 1.0, 2);
+    addEdges(edges.nonManifold, 1.0, 3);
 
     // 换模型（而非仅切换标记）时自动取景到 UV 包围盒
     if (world.lastFitMesh !== meshData) {
       world.lastFitMesh = meshData;
       world.zoomFit();
     }
-  }, [meshData, stats, state.showFlipped, state.showOverlap]);
+  }, [meshData, stats, state.showFlipped, state.showOverlap, state.activeGroup]);
 
   // 选择高亮
   useEffect(() => {
@@ -253,6 +256,7 @@ export function View2D() {
     <div className="view view2d" ref={mountRef}>
       <div className="view-label">
         2D UV — V 向上（OBJ 原生方向）· 双击自适应 · 拖动平移/滚轮缩放
+        {state.activeGroup ? ` · 检查组「${state.activeGroup}」，其他组淡化` : ''}
       </div>
     </div>
   );

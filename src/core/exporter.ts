@@ -55,7 +55,15 @@ export function exportObj(mesh: MeshData): string {
   }
 
   // 面：三角形 -> f v1/vt1 v2/vt2 v3/vt3（角点 v 序号 = ci+1）
+  // 保留 o/g 面组归属：三角形按解析顺序属于原始面，面组变化时写一行 g。
+  // 这样“按组过滤”的模型保存/导出后重新载入仍是带组的完整模型。
+  let currentGroup: string | null = null;
   for (const t of mesh.triangles) {
+    const group = mesh.faces[t.faceId]?.group;
+    if (group !== undefined && group !== currentGroup) {
+      lines.push(`g ${group}`);
+      currentGroup = group;
+    }
     const refs = t.corners.map((ci) => `${ci + 1}/${cornerVt[ci]}`);
     lines.push(`f ${refs.join(' ')}`);
   }
