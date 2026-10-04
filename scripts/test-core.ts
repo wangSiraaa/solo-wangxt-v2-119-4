@@ -1,6 +1,7 @@
 import { parseObj } from '../src/core/parser';
 import { analyzeMesh } from '../src/core/metrics';
 import { exportObj } from '../src/core/exporter';
+import { listGroups, summarizeScope, triActiveMask } from '../src/core/groups';
 import { SAMPLES } from '../src/core/samples';
 
 let failures = 0;
@@ -85,6 +86,81 @@ assert(duplicatedLocs === 8, `seams: 8 个空间角点位置各有 3 个独立 v
 assert(posCounts.size === 8, `seams: 只有 8 个不同空间位置，实际 ${posCounts.size}`);
 assert(seam.vertexCount === 24, 'seams: 24 个稳定顶点身份（不焊接）');
 assert(seam.corners.length === 36, 'seams: 角点总数 36（6 面 × 2 三角 × 3）');
+
+// ===== 面组过滤检查视图（核心口径） =====
+console.log('\n=== 面组过滤 ===');
+const tg = parseObj(SAMPLES.find(s => s.id === 'twogroups')!.obj, 'tg.obj');
+const tgStats = analyzeMesh(tg);
+const groupNames = listGroups(tg).map(g => `${g.name}:${g.faces}/${g.tris}`);
+assert(groupNames.length === 2 && groupNames[0].startsWith('groupA') && groupNames[1].startsWith('groupB'),
+  `twogroups: 解析出两个组，实际 ${JSON.stringify(groupNames)}`);
+
+const allSum = summarizeScope(tg, tgStats, null);
+const aSum = summarizeScope(tg, tgStats, 'groupA');
+const bSum = summarizeScope(tg, tgStats, 'groupB');
+
+// 两个组各有不同异常：A 翻转 1，B 3D 退化 1
+assert(aSum.flipped === 1 && aSum.deg3 === 0, `groupA: 组内 1 翻转/0 3D退化，实际 ${aSum.flipped}/${aSum.deg3}`);
+assert(bSum.flipped === 0 && bSum.deg3 === 1, `groupB: 组内 0 翻转/1 3D退化，实际 ${bSum.flipped}/${bSum.deg3}`);
+assert(aSum.faces === 1 && aSum.tris === 1, 'groupA: 1 面 1 三角');
+assert(bSum.faces === 2 && bSum.tris === 2, 'groupB: 2 面 2 三角');
+// 切换组只突出本组问题
+assert(aSum.flippedFaces.size === 1 && !aSum.flippedFaces.has([...bSum.degenerateFaces][0]),
+  'groupA: 定位集合只含 A 组翻转面');
+assert(bSum.degenerateFaces.size === 1 && !bSum.degenerateFaces.has([...aSum.flippedFaces][0]),
+  'groupB: 定位集合只含 B 组退化面');
+
+// 恢复“全部”后与原诊断逐项一致
+const fullFlipped = tgStats.metrics.filter(m => m.flipped).length;
+const fullDeg3 = tgStats.metrics.filter(m => m.degenerate3d).length;
+const fullOverlap = [...tgStats.overlap].filter(v => v).length;
+assert(allSum.flipped === fullFlipped, `全部汇总翻转=${allSum.flipped} 原诊断=${fullFlipped}`);
+assert(allSum.deg3 === fullDeg3, `全部汇总 3D 退化=${allSum.deg3} 原诊断=${fullDeg3}`);
+assert(allSum.overlap === fullOverlap, `全部汇总重叠=${allSum.overlap} 原诊断=${fullOverlap}`);
+assert(allSum.boundary === tgStats.edges.filter(e => e.boundary).length, '全部汇总边界边与原诊断一致');
+assert(allSum.seam === tgStats.edges.filter(e => e.seam).length, '全部汇总接缝与原诊断一致');
+assert(allSum.nonManifold === tgStats.edges.filter(e => e.nonManifold).length, '全部汇总非流形与原诊断一致');
+assert(allSum.islands === tgStats.islands.length, '全部汇总岛数与原诊断一致');
+assert(allSum.mirroredIslands === tgStats.islands.filter(i => i.mirrored).length, '全部汇总镜像岛与原诊断一致');
+// 两组 = 两个岛（UV 不重叠），均不跨组
+assert(allSum.islands === 2, `twogroups: 2 个 UV 岛，实际 ${allSum.islands}`);
+assert(aSum.spanningIslands === 0 && bSum.spanningIslands === 0, 'twogroups: 无跨组岛');
+
+// 掩码：全部全 1；单组只有组内三角为 1
+assert(triActiveMask(tg, null).every(v => v === 1), '全部掩码全 1');
+const maskA = triActiveMask(tg, 'groupA');
+assert(maskA[0] === 1 && maskA[1] === 0 && maskA[2] === 0, 'groupA 掩码只覆盖第 1 个三角');
+
+// 过滤不得改模型：组视图计算后 mesh 数组长度/面身份/UV 不变
+const tg2 = parseObj(SAMPLES.find(s => s.id === 'twogroups')!.obj, 'tg2.obj');
+assert(tg.faces.length === tg2.faces.length && tg.triangles.length === tg2.triangles.length,
+  '过滤视图不改变面/三角数量');
+assert(tg.positions.length === tg2.positions.length && tg.uvs.length === tg2.uvs.length,
+  '过滤视图不改变顶点/UV 数量');
+
+// 跨组岛：两个 o 组在 3D 中共享一条完整边（v2-v3）且该边两端 UV 一致
+// => 同一 UV 岛跨越两个面组。
+// left:  v1(0,0) v2(1,0) v3(1,1)；right: v2(1,0) v4(2,0) v3(1,1)
+const spanObj = `# span\n`
+  + 'v 0 0 0\nv 1 0 0\nv 1 1 0\n'   // 1,2,3
+  + 'v 2 0 0\n'                     // 4（v2、v3 与 left 复用）
+  + 'vt 0 0\nvt 1 0\nvt 1 1\nvt 2 0\n'
+  + 'o left\nf 1/1 2/2 3/3\n'
+  + 'o right\nf 2/2 4/4 3/3\n';
+const span = parseObj(spanObj, 'span.obj');
+const spanStats = analyzeMesh(span);
+assert(spanStats.islands.length === 1, `span: 共享边+UV 一致 => 1 个岛，实际 ${spanStats.islands.length}`);
+const spanLeft = summarizeScope(span, spanStats, 'left');
+const spanRight = summarizeScope(span, spanStats, 'right');
+assert(spanLeft.islands === 1 && spanLeft.spanningIslands === 1, 'span: left 触及的 1 个岛跨组');
+assert(spanRight.islands === 1 && spanRight.spanningIslands === 1, 'span: right 触及的 1 个岛跨组');
+assert(spanLeft.flipped === spanRight.flipped && spanLeft.flipped === 0, 'span: 两组均无翻转');
+// 跨组共享边按整网格分类：流形共享、非接缝、非边界；每组各触及 2 条边界边
+assert(spanLeft.seam === 0 && spanLeft.nonManifold === 0, 'span: 共享边不是接缝/非流形');
+assert(spanLeft.boundary === 2 && spanRight.boundary === 2, `span: 每组 2 条边界边，实际 ${spanLeft.boundary}/${spanRight.boundary}`);
+// 跨组共享边本身在两组视图中都被计入（边界计数不变，但它不属边界分类）
+assert(spanStats.edges.length === 5 && spanStats.edges.filter(e => !e.boundary && !e.seam && !e.nonManifold).length === 1,
+  'span: 整网格 5 条边（4 边界+1 共享），恰好 1 条普通共享边');
 
 console.log(failures === 0 ? '\nALL CORE TESTS PASSED' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

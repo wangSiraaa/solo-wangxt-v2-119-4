@@ -3,11 +3,14 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { useApp } from '../state/AppContext';
 import {
+  buildDimFactors,
   buildFlagColors,
   buildNonIndexedPositions,
   buildSelectionOverlay,
+  buildWireframe,
   makeCheckerTexture,
 } from '../three/geometry';
+import { triActiveMask } from '../core/groups';
 import type { MeshData } from '../core/types';
 
 export function View3D() {
@@ -29,6 +32,7 @@ export function View3D() {
     downX: number;
     downY: number;
     meshData: MeshData | null;
+    lastFitMesh: MeshData | null;
   } | null>(null);
 
   // 初始化场景（一次）
@@ -69,6 +73,28 @@ export function View3D() {
       metalness: 0,
       flatShading: true,
     });
+    // 面组过滤：范围外三角形通过 aDimF 系数压暗（棋盘纹理与顶点色两路
+    // 都生效）。几何不删除，导出/保存也与此无关。
+    mat.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          '#include <common>\nattribute float aDimF;\nvarying float vDimF;',
+        )
+        .replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\nvDimF = aDimF;',
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          '#include <common>\nvarying float vDimF;',
+        )
+        .replace(
+          '#include <color_fragment>',
+          '#include <color_fragment>\ndiffuseColor.rgb *= vDimF;',
+        );
+    };
     const mesh = new THREE.Mesh(geo, mat);
     scene.add(mesh);
 
@@ -89,7 +115,7 @@ export function View3D() {
 
     const wire = new THREE.LineSegments(
       new THREE.BufferGeometry(),
-      new THREE.LineBasicMaterial({ color: 0x1b1d24 }),
+      new THREE.LineBasicMaterial({ color: 0xffffff, vertexColors: true }),
     );
     scene.add(wire);
 
@@ -100,6 +126,7 @@ export function View3D() {
       renderer, scene, camera, controls, mesh, overlay, wire,
       raycaster, pointer, positions: null as Float32Array | null,
       frame: 0, downX: 0, downY: 0, meshData: null as MeshData | null,
+      lastFitMesh: null as MeshData | null,
     };
     worldRef.current = world;
 
@@ -134,20 +161,29 @@ export function View3D() {
 
   // 模型/标记变化时重建几何
   const { mesh: meshData, stats } = state;
+  const activeMask = useMemo(
+    () => (meshData ? triActiveMask(meshData, state.groupFilter) : null),
+    [meshData, state.groupFilter],
+  );
   useEffect(() => {
     const world = worldRef.current;
-    if (!world || !meshData || !stats) return;
+    if (!world || !meshData || !stats || !activeMask) return;
 
     const positions = buildNonIndexedPositions(meshData);
     world.positions = positions;
     world.meshData = meshData;
     const geo = world.mesh.geometry;
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute(
+      'aDimF',
+      new THREE.BufferAttribute(buildDimFactors(meshData, activeMask), 1),
+    );
     const colors = buildFlagColors(
       meshData,
       stats,
       state.showFlipped,
       state.showOverlap,
+      activeMask,
     );
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
@@ -180,35 +216,42 @@ export function View3D() {
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
 
-    // 深色三角形线框（非索引，相邻面有重复线段，低模无妨）
-    const linePos: number[] = [];
-    for (const t of meshData.triangles) {
-      const cs = t.corners.map((ci) => {
-        const c = meshData.corners[ci];
-        return [
-          meshData.positions[c.v * 3],
-          meshData.positions[c.v * 3 + 1],
-          meshData.positions[c.v * 3 + 2],
-        ];
-      });
-      linePos.push(...cs[0], ...cs[1], ...cs[1], ...cs[2], ...cs[2], ...cs[0]);
-    }
+    // 深色三角形线框（非索引，相邻面有重复线段，低模无妨）；
+    // 面组过滤时范围外线段随组淡化。
+    const wire = buildWireframe(meshData, activeMask);
     world.wire.geometry.setAttribute(
       'position',
-      new THREE.Float32BufferAttribute(linePos, 3),
+      new THREE.Float32BufferAttribute(wire.position, 3),
+    );
+    world.wire.geometry.setAttribute(
+      'color',
+      new THREE.Float32BufferAttribute(wire.color, 3),
     );
 
-    // 取景：首次或换模型时居中
-    const box = geo.boundingBox!;
-    const center = box.getCenter(new THREE.Vector3());
-    const r = box.getSize(new THREE.Vector3()).length() / 2 || 1;
-    world.camera.position.copy(center).add(new THREE.Vector3(1.6 * r, 1.1 * r, 2.0 * r));
-    world.camera.near = r / 100;
-    world.camera.far = r * 100;
-    world.camera.updateProjectionMatrix();
-    world.controls.target.copy(center);
-    world.controls.update();
-  }, [meshData, stats, state.checkerOn, state.checkerScale, state.showFlipped, state.showOverlap]);
+    // 取景：仅在换模型时居中；切换面组过滤/标记不应打断用户视角。
+    if (world.lastFitMesh !== meshData) {
+      world.lastFitMesh = meshData;
+      const box = geo.boundingBox!;
+      const center = box.getCenter(new THREE.Vector3());
+      const r = box.getSize(new THREE.Vector3()).length() / 2 || 1;
+      world.camera.position.copy(center).add(new THREE.Vector3(1.6 * r, 1.1 * r, 2.0 * r));
+      world.camera.near = r / 100;
+      world.camera.far = r * 100;
+      world.camera.updateProjectionMatrix();
+      world.controls.target.copy(center);
+      world.controls.update();
+    }
+  }, [meshData, stats, activeMask, state.checkerOn, state.checkerScale, state.showFlipped, state.showOverlap]);
+
+  // 仅切换面组过滤时：只需更新淡化系数（几何/棋盘 UV 完全不变）。
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!world || !meshData || !activeMask) return;
+    world.mesh.geometry.setAttribute(
+      'aDimF',
+      new THREE.BufferAttribute(buildDimFactors(meshData, activeMask), 1),
+    );
+  }, [activeMask, meshData]);
 
   // 选择集 -> 覆盖网格
   useEffect(() => {
@@ -264,8 +307,9 @@ export function View3D() {
 
   const label = useMemo(() => {
     if (!meshData) return '未载入模型';
-    return `${meshData.fileName} · ${meshData.faces.length} 面 / ${meshData.triangles.length} 三角 / ${meshData.vertexCount} 顶点身份`;
-  }, [meshData]);
+    const base = `${meshData.fileName} · ${meshData.faces.length} 面 / ${meshData.triangles.length} 三角 / ${meshData.vertexCount} 顶点身份`;
+    return state.groupFilter ? `${base} · 检查组「${state.groupFilter}」（其余面组已淡化）` : base;
+  }, [meshData, state.groupFilter]);
 
   return (
     <div className="view view3d" ref={mountRef}>

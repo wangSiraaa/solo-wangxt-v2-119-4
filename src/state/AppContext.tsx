@@ -33,6 +33,8 @@ export interface AppState {
   fileName: string;
   projectId: string | null;
   selectedFaceIds: Set<number>;
+  /** 面组检查过滤：null = 全部。仅影响视图与汇总，不参与保存/导出。 */
+  groupFilter: string | null;
   checkerOn: boolean;
   checkerScale: number;
   showFlipped: boolean;
@@ -47,12 +49,19 @@ type Action =
   | { type: 'replace-mesh'; mesh: MeshData; stats: MeshStats; notice?: Notice }
   | { type: 'select'; faceIds: Set<number> }
   | { type: 'toggle-face'; faceId: number }
+  | { type: 'set-group'; group: string | null }
   | { type: 'set-checker'; on: boolean; scale?: number }
   | { type: 'toggle-flag'; key: 'showFlipped' | 'showOverlap' }
   | { type: 'unwrapping'; on: boolean }
   | { type: 'notice'; notice: Notice | null }
   | { type: 'project-id'; id: string | null }
   | { type: 'undo' };
+
+/** 过滤组名在新网格里已不存在时回退到“全部”，避免空视图。 */
+function clampGroup(group: string | null, mesh: MeshData): string | null {
+  if (group === null) return null;
+  return mesh.faces.some((f) => f.group === group) ? group : null;
+}
 
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -65,6 +74,7 @@ function reducer(state: AppState, action: Action): AppState {
         fileName: action.fileName,
         projectId: action.projectId,
         selectedFaceIds: new Set(),
+        groupFilter: null,
         unwrapping: false,
         history: [],
         notice: null,
@@ -74,6 +84,7 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         mesh: action.mesh,
         stats: action.stats,
+        groupFilter: clampGroup(state.groupFilter, action.mesh),
         history: state.mesh ? [...state.history, state.mesh].slice(-10) : state.history,
         notice: action.notice ?? state.notice,
       };
@@ -85,6 +96,8 @@ function reducer(state: AppState, action: Action): AppState {
       else next.add(action.faceId);
       return { ...state, selectedFaceIds: next };
     }
+    case 'set-group':
+      return { ...state, groupFilter: action.group };
     case 'set-checker':
       return {
         ...state,
@@ -106,6 +119,7 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         mesh: prev,
         stats: analyzeMesh(prev),
+        groupFilter: clampGroup(state.groupFilter, prev),
         history: state.history.slice(0, -1),
         notice: { kind: 'info', text: '已撤销上一次 UV 替换' },
       };
@@ -120,6 +134,7 @@ export interface AppContextValue {
   loadObjText: (text: string, fileName: string, projectId?: string | null) => void;
   selectFaces: (faceIds: Set<number>) => void;
   toggleFace: (faceId: number) => void;
+  setGroupFilter: (group: string | null) => void;
   setChecker: (on: boolean, scale?: number) => void;
   toggleFlag: (key: 'showFlipped' | 'showOverlap') => void;
   runUnwrap: () => Promise<void>;
@@ -143,6 +158,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fileName: '',
     projectId: null,
     selectedFaceIds: new Set<number>(),
+    groupFilter: null,
     checkerOn: true,
     checkerScale: 8,
     showFlipped: true,
@@ -207,6 +223,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
   const toggleFace = useCallback((faceId: number) => {
     dispatch({ type: 'toggle-face', faceId });
+  }, []);
+  const setGroupFilter = useCallback((group: string | null) => {
+    dispatch({ type: 'set-group', group });
   }, []);
   const setChecker = useCallback((on: boolean, scale?: number) => {
     dispatch({ type: 'set-checker', on, scale });
@@ -337,6 +356,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       loadObjText,
       selectFaces,
       toggleFace,
+      setGroupFilter,
       setChecker,
       toggleFlag,
       runUnwrap,
@@ -349,8 +369,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       notify,
       undo,
     }),
-    [state, projects, loadObjText, selectFaces, toggleFace, setChecker,
-      toggleFlag, runUnwrap, exportCurrent, saveCurrent, refreshProjects,
+    [state, projects, loadObjText, selectFaces, toggleFace, setGroupFilter,
+      setChecker, toggleFlag, runUnwrap, exportCurrent, saveCurrent, refreshProjects,
       openProject, removeProject, notify, undo],
   );
 

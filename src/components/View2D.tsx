@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { useApp } from '../state/AppContext';
@@ -7,6 +7,7 @@ import {
   buildUvFills,
   buildUvSelection,
 } from '../three/geometry';
+import { triActiveMask } from '../core/groups';
 import type { MeshData } from '../core/types';
 
 export function View2D() {
@@ -155,28 +156,38 @@ export function View2D() {
   }, []);
 
   const { mesh: meshData, stats } = state;
+  const activeMask = useMemo(
+    () => (meshData ? triActiveMask(meshData, state.groupFilter) : null),
+    [meshData, state.groupFilter],
+  );
 
   // 重建填充与分类边
   useEffect(() => {
     const world = worldRef.current;
-    if (!world || !meshData || !stats) return;
+    if (!world || !meshData || !stats || !activeMask) return;
     world.meshData = meshData;
 
     const fg = buildUvFills(meshData, stats, {
       showFlipped: state.showFlipped,
       showOverlap: state.showOverlap,
+      active: activeMask,
     });
     world.fills.geometry.dispose();
     world.fills.geometry = fg;
 
-    // 重建边层
+    // 重建边层：活跃边正常色，范围外边淡化（几何仍完整，岛拓扑按整网格）
     const layer = world.edgeLayer;
     layer.children.forEach((c) => {
       (c as THREE.LineSegments).geometry?.dispose();
     });
     layer.clear();
-    const edges = buildUvEdges(meshData, stats);
-    const addEdges = (geo: THREE.BufferGeometry, color: number, opacity: number, order: number) => {
+    const { full, dim } = buildUvEdges(meshData, stats, activeMask);
+    const addEdges = (
+      geo: THREE.BufferGeometry,
+      color: number,
+      opacity: number,
+      order: number,
+    ) => {
       const line = new THREE.LineSegments(
         geo,
         new THREE.LineBasicMaterial({
@@ -189,17 +200,21 @@ export function View2D() {
       line.renderOrder = order;
       layer.add(line);
     };
-    addEdges(edges.regular, 0x2e3140, 0.55, 1);
-    addEdges(edges.boundary, 0xdfe3ee, 0.9, 2);
-    addEdges(edges.seam, 0xffb02e, 1.0, 2);
-    addEdges(edges.nonManifold, 0xff3b5c, 1.0, 3);
+    addEdges(dim.regular, 0x2e3140, 0.16, 0);
+    addEdges(dim.boundary, 0xdfe3ee, 0.14, 0);
+    addEdges(dim.seam, 0xffb02e, 0.16, 0);
+    addEdges(dim.nonManifold, 0xff3b5c, 0.18, 0);
+    addEdges(full.regular, 0x2e3140, 0.55, 1);
+    addEdges(full.boundary, 0xdfe3ee, 0.9, 2);
+    addEdges(full.seam, 0xffb02e, 1.0, 2);
+    addEdges(full.nonManifold, 0xff3b5c, 1.0, 3);
 
     // 换模型（而非仅切换标记）时自动取景到 UV 包围盒
     if (world.lastFitMesh !== meshData) {
       world.lastFitMesh = meshData;
       world.zoomFit();
     }
-  }, [meshData, stats, state.showFlipped, state.showOverlap]);
+  }, [meshData, stats, activeMask, state.showFlipped, state.showOverlap]);
 
   // 选择高亮
   useEffect(() => {
@@ -253,6 +268,7 @@ export function View2D() {
     <div className="view view2d" ref={mountRef}>
       <div className="view-label">
         2D UV — V 向上（OBJ 原生方向）· 双击自适应 · 拖动平移/滚轮缩放
+        {state.groupFilter ? ` · 检查组「${state.groupFilter}」` : ''}
       </div>
     </div>
   );

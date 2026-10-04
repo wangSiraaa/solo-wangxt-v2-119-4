@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useApp } from '../state/AppContext';
 import type { TriMetrics } from '../core/types';
+import { listGroups, summarizeScope } from '../core/groups';
 
 function fmt(n: number | null | undefined, digits = 3): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return '—';
@@ -29,69 +30,18 @@ function aggregate(ms: TriMetrics[]) {
 }
 
 export function StatsPanel() {
-  const { state, selectFaces } = useApp();
-  const { mesh, stats, selectedFaceIds } = state;
+  const { state, selectFaces, setGroupFilter } = useApp();
+  const { mesh, stats, selectedFaceIds, groupFilter } = state;
 
-  const summary = useMemo(() => {
-    if (!mesh || !stats) return null;
-    const triInFace = new Map<number, number[]>();
-    mesh.triangles.forEach((t) => {
-      const list = triInFace.get(t.faceId);
-      if (list) list.push(t.id);
-      else triInFace.set(t.faceId, [t.id]);
-    });
+  // 模型包含的全部面组（o/g）。过滤只是视图，底层永远是完整模型。
+  const groups = useMemo(() => (mesh ? listGroups(mesh) : []), [mesh]);
 
-    let deg3 = 0;
-    let degUv = 0;
-    let flipped = 0;
-    let overlap = 0;
-    const ratioValid: number[] = [];
-    const angles: number[] = [];
-    let minR = Infinity;
-    let maxR = -Infinity;
-    for (const m of stats.metrics) {
-      if (m.degenerate3d) deg3++;
-      if (m.degenerateUv) degUv++;
-      if (m.flipped) flipped++;
-      if (m.areaRatio !== null) {
-        ratioValid.push(m.areaRatio);
-        minR = Math.min(minR, m.areaRatio);
-        maxR = Math.max(maxR, m.areaRatio);
-      }
-      if (m.angleDistortion !== null) angles.push(m.angleDistortion);
-    }
-    for (let i = 0; i < stats.overlap.length; i++) if (stats.overlap[i]) overlap++;
-
-    const boundary = stats.edges.filter((e) => e.boundary).length;
-    const seam = stats.edges.filter((e) => e.seam).length;
-    const nm = stats.edges.filter((e) => e.nonManifold).length;
-    const mirroredIsl = stats.islands.filter((i) => i.mirrored).length;
-
-    // 异常面收集（点击定位）
-    const faceSetOf = (triIds: number[]) => {
-      const s = new Set<number>();
-      triIds.forEach((id) => s.add(mesh.triangles[id].faceId));
-      return s;
-    };
-    const flippedTris = stats.metrics.map((m, i) => (m.flipped ? i : -1)).filter((i) => i >= 0);
-    const overlapTris = [...stats.overlap].map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
-    const degTris = stats.metrics
-      .map((m, i) => (m.degenerate3d || m.degenerateUv ? i : -1))
-      .filter((i) => i >= 0);
-
-    return {
-      triInFace,
-      deg3, degUv, flipped, overlap,
-      minR: minR === Infinity ? null : minR,
-      maxR: maxR === -Infinity ? null : maxR,
-      maxAngle: angles.length ? Math.max(...angles) : null,
-      boundary, seam, nm, mirroredIsl,
-      islands: stats.islands.length,
-      flippedFaces: faceSetOf(flippedTris),
-      overlapFaces: faceSetOf(overlapTris),
-      degFaces: faceSetOf(degTris),
-    };
-  }, [mesh, stats]);
+  // 当前检查范围的汇总。groupFilter === null 时遍历整网格，与原诊断一致；
+  // 单组时逐面指标按组内三角形统计，岛/边拓扑仍来自整网格 stats。
+  const summary = useMemo(
+    () => (mesh && stats ? summarizeScope(mesh, stats, groupFilter) : null),
+    [mesh, stats, groupFilter],
+  );
 
   const selectedAgg = useMemo(() => {
     if (!mesh || !stats || selectedFaceIds.size === 0) return null;
@@ -113,33 +63,71 @@ export function StatsPanel() {
     return <aside className="panel">尚未载入模型。</aside>;
   }
 
+  const filtered = groupFilter !== null;
   const chip = (ok: boolean) => (ok ? 'bad' : 'ok');
 
   return (
     <aside className="panel">
       <section>
-        <h3>拓扑</h3>
+        <h3>面组检查（o / g）</h3>
+        <select
+          className="group-select"
+          data-testid="group-filter"
+          value={groupFilter ?? ''}
+          onChange={(e) => setGroupFilter(e.target.value === '' ? null : e.target.value)}
+        >
+          <option value="">全部（完整资产）</option>
+          {groups.map((g) => (
+            <option key={g.name} value={g.name}>
+              {g.name}（{g.faces} 面 / {g.tris} 三角）
+            </option>
+          ))}
+        </select>
+        {filtered && (
+          <p className="hint filter-note" data-testid="filter-note">
+            当前仅检查组「{groupFilter}」（{summary.faces} 面 / {summary.tris} 三角）：
+            问题清单与面积/角度按<b>组内面</b>统计；其他面组在 2D/3D 视图中淡化，
+            但未被删除，UV、接缝与导出内容均不变。
+          </p>
+        )}
+        {filtered && summary.spanningIslands > 0 && (
+          <p className="hint filter-warn" data-testid="spanning-note">
+            {summary.spanningIslands} 个 UV 岛跨越多个面组：岛的连通、镜像与重叠
+            仍按<b>整网格拓扑</b>计算，下列数字只统计落在本组内的部分。
+          </p>
+        )}
+      </section>
+
+      <section>
+        <h3>拓扑{filtered ? `（组内 ${summary.faces} / 全资产 ${mesh.faces.length} 面）` : ''}</h3>
         <Row k="顶点身份 (v)" v={mesh.vertexCount} />
         <Row k="角点 (corner)" v={mesh.corners.length} hint="接缝两侧可为同 v 不同 vt" />
-        <Row k="原始面 / 三角形" v={`${mesh.faces.length} / ${mesh.triangles.length}`} />
+        <Row
+          k="原始面 / 三角形"
+          v={filtered ? `${summary.faces} / ${summary.tris}（全 ${mesh.faces} / ${mesh.triangles.length}）` : `${mesh.faces.length} / ${mesh.triangles.length}`}
+        />
         <Row k="UV 顶点 (vt)" v={mesh.uvCount} />
         <Row k="UV 来源" v={mesh.uvOrigin === 'obj' ? 'OBJ/编辑' : '平面回退'} />
       </section>
 
       <section>
-        <h3>边（按顶点身份+空间近邻）</h3>
-        <Row k="UV 岛" v={summary.islands} />
+        <h3>边{filtered ? '（组内触及，分类按整网格）' : '（按顶点身份+空间近邻）'}</h3>
+        <Row
+          k={`UV 岛${filtered ? '（触及 / 全资产）' : ''}`}
+          v={filtered ? `${summary.islands} / ${stats.islands.length}` : stats.islands.length}
+          hint={filtered ? '岛连通始终按整网格计算' : undefined}
+        />
         <Row k="边界边" v={summary.boundary} />
         <Row k="共享边接缝" v={summary.seam} cls={summary.seam ? 'warn' : 'ok'} />
-        <Row k="非流形边" v={summary.nm} cls={chip(summary.nm === 0)}
+        <Row k="非流形边" v={summary.nonManifold} cls={chip(summary.nonManifold === 0)}
           hint="≥3 个三角形共享的 3D 边" />
       </section>
 
       <section>
-        <h3>UV 健康</h3>
+        <h3>UV 健康{filtered ? '（组内）' : ''}</h3>
         <IssueRow
           label="翻转三角形 / 镜像岛"
-          value={`${summary.flipped} / ${summary.mirroredIsl}`}
+          value={`${summary.flipped} / ${summary.mirroredIslands}`}
           bad={summary.flipped > 0}
           onLocate={() => summary.flippedFaces.size && selectFaces(summary.flippedFaces)}
         />
@@ -153,26 +141,30 @@ export function StatsPanel() {
           label="退化（3D / UV）"
           value={`${summary.deg3} / ${summary.degUv}`}
           bad={summary.deg3 + summary.degUv > 0}
-          onLocate={() => summary.degFaces.size && selectFaces(summary.degFaces)}
+          onLocate={() => summary.degenerateFaces.size && selectFaces(summary.degenerateFaces)}
           hint="退化面不参与比率与角度计算"
         />
       </section>
 
       <section>
-        <h3>面积畸变（纹素密度）</h3>
-        <Row k="全局相对尺度" v={fmt(stats.globalScale, 4)} hint="中位 3D/UV 面积比" />
+        <h3>面积畸变（纹素密度）{filtered ? '（组内）' : ''}</h3>
         <Row
-          k="最小 / 最大比率"
-          v={`${fmt(summary.minR)}× / ${fmt(summary.maxR)}×`}
-          cls={summary.maxR !== null && (summary.maxR > 2 || summary.minR! < 0.5) ? 'warn' : 'ok'}
+          k="全局相对尺度"
+          v={fmt(stats.globalScale, 4)}
+          hint={filtered ? '中位归一始终按整网格计算，组内比率与之可比' : '中位 3D/UV 面积比'}
+        />
+        <Row
+          k={filtered ? '组内最小 / 最大比率' : '最小 / 最大比率'}
+          v={`${fmt(summary.minRatio)}× / ${fmt(summary.maxRatio)}×`}
+          cls={summary.maxRatio !== null && (summary.maxRatio > 2 || summary.minRatio! < 0.5) ? 'warn' : 'ok'}
         />
         <p className="hint">比率 1× = 与中位密度一致；0.5× 偏稀，2× 偏密。</p>
       </section>
 
       <section>
-        <h3>角度畸变</h3>
+        <h3>角度畸变{filtered ? '（组内）' : ''}</h3>
         <Row
-          k="全模型最大内角偏差"
+          k={filtered ? '组内最大内角偏差' : '全模型最大内角偏差'}
           v={`${fmt(summary.maxAngle, 1)}°`}
           cls={summary.maxAngle !== null && summary.maxAngle > 15 ? 'warn' : 'ok'}
         />

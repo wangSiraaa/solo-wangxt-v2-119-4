@@ -131,9 +131,40 @@ f 7/7 8/8 9/9
 f 10/1 11/2 12/3
 `;
 
+/**
+ * 5) 双组异常（面组过滤检查视图）
+ *    两个 o 组各含一种不同异常：
+ *    groupA：正常 3D 三角，但 UV 绕序反向 => 翻转（镜像岛）；
+ *    groupB：3D 共线退化三角 + 另一片 UV 强压缩三角。
+ *    两组 UV 放在不同区域，不产生岛间重叠；过滤到单组时只看到本组问题，
+ *    恢复“全部”后汇总回到整网格诊断。
+ */
+const twoGroups = `${header('双组异常样例', 'groupA 翻转；groupB 3D 退化+拉伸；两组 UV 不重叠')}
+o groupA
+v 0 0 0
+v 1 0 0
+v 1 1 0
+vt 0 0
+vt 0 1
+vt 1 1
+f 1/1 2/2 3/3
+o groupB
+v 3 0 0
+v 4 0 0
+v 5 0 0
+v 5 1 0
+vt 3 0
+vt 4 0
+vt 5 0
+vt 3 0.02
+f 4/4 5/5 6/6
+f 4/4 6/6 7/7
+`;
+
 export const SAMPLES: SampleDef[] = [
   { id: 'mirrored', label: '镜像岛', description: '折边两侧映射到同一 UV 区域，绕序相反', obj: mirrored },
   { id: 'seams', label: '共享边接缝', description: '立方体：每面顶点独立、UV 各占一格，共享边全为接缝', obj: cubeWithSeams() },
   { id: 'nonmanifold', label: '非流形边', description: '三个三角形共享一条 3D 边', obj: nonManifold },
   { id: 'degenerate', label: '退化/拉伸/重叠', description: '退化面不计比率，另有强拉伸与岛间重叠', obj: degenerate },
+  { id: 'twogroups', label: '双组异常', description: 'groupA 翻转、groupB 退化/拉伸：逐组过滤检查', obj: twoGroups },
 ];

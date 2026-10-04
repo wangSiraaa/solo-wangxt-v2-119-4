@@ -3,7 +3,13 @@ import { chromium } from 'playwright';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const base = 'http://127.0.0.1:5199';
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({
+  // 允许通过环境变量指定 chromium 可执行（沙盒无 root 装依赖时用）；
+  // 正常 CI 留空，走 Playwright 自带浏览器。
+  ...(process.env.E2E_CHROMIUM
+    ? { executablePath: process.env.E2E_CHROMIUM, args: ['--no-sandbox', '--disable-dev-shm-usage'] }
+    : {}),
+});
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 const errors: string[] = [];
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -16,7 +22,7 @@ const check = (name: string, cond: boolean, extra = '') => {
 
 await page.goto(base);
 await page.waitForSelector('.sample-grid', { timeout: 10000 });
-check('空状态显示样例', await page.locator('.sample-grid button').count() === 4);
+check('空状态显示样例', await page.locator('.sample-grid button').count() === 5);
 
 // 1) 共享边接缝样例
 await page.locator('.sample-grid button', { hasText: '共享边接缝' }).click();
@@ -134,6 +140,108 @@ await page.locator('.menu-item .proj-open').first().click();
 await sleep(300);
 panel = await page.locator('.panel').innerText();
 check('从 IndexedDB 恢复工程（36 角点）', /角点 \(corner\)\s*36/.test(panel));
+
+// 10) 面组过滤检查视图：双组样例，两组各有不同异常
+await page.locator('.toolbar .dropdown button', { hasText: '样例' }).hover();
+await page.locator('.dropdown .menu button', { hasText: '双组异常' }).click();
+await sleep(300);
+panel = await page.locator('.panel').innerText();
+// 整网格：1 翻转（A 组）、1 个 3D 退化（B 组）、2 个 UV 岛
+check('双组: 全部下 1 翻转', /翻转三角形 \/ 镜像岛\s*1 \/ 1/.test(panel), panel.match(/翻转[^\n]*/)?.[0]);
+check('双组: 全部下 1 个 3D 退化', /退化（3D \/ UV）\s*1 \//.test(panel), panel.match(/退化[^\n]*/)?.[0]);
+check('双组: 2 个 UV 岛', /UV 岛\s*2/.test(panel));
+check('双组: 默认无过滤说明', !(await page.locator('[data-testid=filter-note]').count()));
+
+const groupSel = page.locator('[data-testid=group-filter]');
+// 切到 groupA：只应有翻转，不应有 3D 退化
+await groupSel.selectOption('groupA');
+await sleep(200);
+panel = await page.locator('.panel').innerText();
+check('groupA: 出现过滤说明', await page.locator('[data-testid=filter-note]').count() === 1);
+check('groupA: 1 翻转', /翻转三角形 \/ 镜像岛\s*1 \/ 1/.test(panel), panel.match(/翻转[^\n]*/)?.[0]);
+check('groupA: 无 3D 退化（本组问题）', /退化（3D \/ UV）\s*0 \//.test(panel), panel.match(/退化[^\n]*/)?.[0]);
+check('groupA: 面数 1 / 全资产 3', /组内 1 \/ 全资产 3 面/.test(panel), panel.match(/组内[^\n]*/)?.[0]);
+check('groupA: 无跨组岛提示', !(await page.locator('[data-testid=spanning-note]').count()));
+// 视图标签体现过滤
+const label3d = await page.locator('.view3d .view-label').innerText();
+check('groupA: 3D 标签提示淡化', /检查组「groupA」/.test(label3d), label3d);
+
+// 切到 groupB：只应有退化，不应有翻转
+await groupSel.selectOption('groupB');
+await sleep(200);
+panel = await page.locator('.panel').innerText();
+check('groupB: 1 个 3D 退化', /退化（3D \/ UV）\s*1 \//.test(panel), panel.match(/退化[^\n]*/)?.[0]);
+check('groupB: 无翻转（本组问题）', /翻转三角形 \/ 镜像岛\s*0 \/ 0/.test(panel), panel.match(/翻转[^\n]*/)?.[0]);
+check('groupB: 面数 2 / 全资产 3', /组内 2 \/ 全资产 3 面/.test(panel));
+
+// 恢复“全部”：汇总与最初整网格诊断一致
+await groupSel.selectOption('');
+await sleep(200);
+panel = await page.locator('.panel').innerText();
+check('恢复全部: 1 翻转 / 1 镜像岛', /翻转三角形 \/ 镜像岛\s*1 \/ 1/.test(panel), panel.match(/翻转[^\n]*/)?.[0]);
+check('恢复全部: 1 个 3D 退化', /退化（3D \/ UV）\s*1 \//.test(panel));
+check('恢复全部: 2 个 UV 岛', /UV 岛\s*2/.test(panel));
+check('恢复全部: 过滤说明消失', !(await page.locator('[data-testid=filter-note]').count()));
+
+// 11) 过滤状态下导出：下载内容仍是完整模型（3 面全在）
+await groupSel.selectOption('groupA');
+await sleep(150);
+const [dl2] = await Promise.all([
+  page.waitForEvent('download'),
+  page.locator('button', { hasText: '导出 UV OBJ' }).click(),
+]);
+const obj2 = (await import('node:fs')).readFileSync((await dl2.path())!, 'utf8');
+const f2 = (obj2.match(/^f /gm) || []).length;
+check('过滤中导出: 仍是完整 3 个三角面', f2 === 3, `f=${f2}`);
+// 过滤中保存的工程也不被裁剪
+await page.locator('button', { hasText: '存工程' }).click();
+await page.waitForSelector('.notice.success:has-text("IndexedDB")', { timeout: 10000 });
+await sleep(200);
+// 重新载入导出的 OBJ：完整模型，且新载入后过滤自动回到“全部”
+await page.evaluate((text) => {
+  const dt = new DataTransfer();
+  dt.items.add(new File([text], 'filt-roundtrip.obj', { type: 'text/plain' }));
+  const input = document.querySelector('input[type=file]') as HTMLInputElement;
+  input.files = dt.files;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}, obj2);
+await sleep(300);
+panel = await page.locator('.panel').innerText();
+check('过滤中导出的 OBJ 重载后是完整模型', /原始面 \/ 三角形\s*3 \/ 3/.test(panel), panel.match(/原始面[^\n]*/)?.[0]);
+check('重载后过滤回到全部（无过滤说明）', !(await page.locator('[data-testid=filter-note]').count()));
+
+// 12) 跨组岛：两 o 组共享一条 UV 一致的 3D 边 => 1 岛跨 2 组并给出说明
+await page.evaluate(() => {
+  const obj = `# span
+v 0 0 0
+v 1 0 0
+v 1 1 0
+v 2 0 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 2 0
+o left
+f 1/1 2/2 3/3
+o right
+f 2/2 4/4 3/3
+`;
+  const dt = new DataTransfer();
+  dt.items.add(new File([obj], 'span.obj', { type: 'text/plain' }));
+  const input = document.querySelector('input[type=file]') as HTMLInputElement;
+  input.files = dt.files;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+});
+await sleep(300);
+panel = await page.locator('.panel').innerText();
+check('跨组岛: 全部下 1 个 UV 岛', /UV 岛\s*1/.test(panel), panel.match(/UV 岛[^\n]*/)?.[0]);
+await page.locator('[data-testid=group-filter]').selectOption('left');
+await sleep(200);
+check('跨组岛: 过滤时显示跨组岛说明', await page.locator('[data-testid=spanning-note]').count() === 1);
+const spanNote = await page.locator('[data-testid=spanning-note]').innerText();
+check('跨组岛: 说明 1 个岛跨多组', /1 个 UV 岛跨越多个面组/.test(spanNote), spanNote);
+panel = await page.locator('.panel').innerText();
+check('跨组岛: 触及岛数仍为 1（拓扑按整网格）', /UV 岛（触及 \/ 全资产）\s*1 \/ 1/.test(panel), panel.match(/UV 岛[^\n]*/)?.[0]);
 
 check('无控制台错误', errors.length === 0, errors.slice(0, 3).join(' | '));
 

@@ -183,6 +183,33 @@ body {
 }
 .hint { color: var(--muted); font-size: 11px; margin: 6px 0 0; }
 
+/* 面组过滤 */
+.group-select {
+  width: 100%;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.group-select:focus { border-color: var(--accent); outline: none; }
+.filter-note {
+  background: rgba(66, 199, 255, 0.08);
+  border-left: 2px solid var(--accent);
+  padding: 6px 8px;
+  border-radius: 0 6px 6px 0;
+  line-height: 1.5;
+}
+.filter-warn {
+  background: rgba(255, 176, 46, 0.08);
+  border-left: 2px solid var(--warn);
+  padding: 6px 8px;
+  border-radius: 0 6px 6px 0;
+  line-height: 1.5;
+  color: #f2d8a4;
+}
+
 /* Notice */
 .notice {
   position: fixed;
